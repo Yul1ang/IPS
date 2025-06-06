@@ -8,6 +8,7 @@
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/evp.h>
+#include <openssl/err.h> 
 #include "../includes/common.h"
 
 // Parametros del servidor
@@ -163,10 +164,36 @@ int save_user(UserReg *u) {
 RSA* load_public_key(const char *dni) {
     char path[256];
     sprintf(path, "keys/users_public_keys/%s_public.pem", dni);
+    printf("Intentando abrir archivo de clave publica: %s\n", path);
     FILE *fp = fopen(path, "r");
-    if (!fp) return NULL;
+    if (!fp) {
+        printf("No se pudo abrir el archivo %s\n", path);
+        return NULL;
+    }
+
+    // PRIMERO intenta el formato moderno (BEGIN PUBLIC KEY)
+    EVP_PKEY *evp_key = PEM_read_PUBKEY(fp, NULL, NULL, NULL);
+    if (evp_key) {
+        RSA *rsa = EVP_PKEY_get1_RSA(evp_key);
+        EVP_PKEY_free(evp_key);
+        fclose(fp);
+        if (!rsa) {
+            printf("No se pudo extraer RSA de la clave publica (EVP)\n");
+            return NULL;
+        }
+        printf("Clave publica cargada correctamente (PUBKEY)\n");
+        return rsa;
+    }
+    // Si no, intenta el formato antiguo (BEGIN RSA PUBLIC KEY)
+    fseek(fp, 0, SEEK_SET); // vuelve al principio del archivo
     RSA *rsa = PEM_read_RSA_PUBKEY(fp, NULL, NULL, NULL);
     fclose(fp);
+    if (!rsa) {
+        printf("No se pudo leer la clave publica (ni PUBKEY ni RSA PUBKEY). Error OpenSSL:\n");
+        ERR_print_errors_fp(stderr);
+        return NULL;
+    }
+    printf("Clave publica cargada correctamente (RSA_PUBKEY)\n");
     return rsa;
 }
 
