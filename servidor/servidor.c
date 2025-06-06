@@ -169,24 +169,24 @@ RSA* load_public_key(const char *dni) {
         printf("No se pudo abrir el archivo %s\n", path);
         return NULL;
     }
-
     EVP_PKEY *evp_key = PEM_read_PUBKEY(fp, NULL, NULL, NULL);
+    fclose(fp);
     if (!evp_key) {
         printf("No se pudo leer la clave publica en %s (PEM_read_PUBKEY fallo)\n", path);
         ERR_print_errors_fp(stderr);
-        fclose(fp);
         return NULL;
     }
     RSA *rsa = EVP_PKEY_get1_RSA(evp_key);
     EVP_PKEY_free(evp_key);
-    fclose(fp);
     if (!rsa) {
         printf("No se pudo extraer RSA de la clave publica\n");
+        ERR_print_errors_fp(stderr);
         return NULL;
     }
     printf("Clave publica cargada correctamente\n");
     return rsa;
 }
+
 
 // Descifra los datos del usuario recibidos usando AES-256-CBC
 int decrypt_and_store(const unsigned char *cipher, int cipherlen, const unsigned char *sym_key, const unsigned char *iv, UserData *out) {
