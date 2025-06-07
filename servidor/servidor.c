@@ -9,6 +9,7 @@
 #include <openssl/rand.h>
 #include <openssl/evp.h>
 #include <openssl/err.h> 
+#include <openssl/bio.h>
 #include "../includes/common.h"
 
 // Parametros del servidor
@@ -164,22 +165,41 @@ RSA* load_public_key(const char *dni) {
     char path[256];
     sprintf(path, "keys/users_public_keys/%s_public.pem", dni);
     printf("Intentando abrir archivo de clave publica: %s\n", path);
-    FILE *fp = fopen(path, "r");
+
+    FILE *fp = fopen(path, "rb");
     if (!fp) {
+        perror("fopen");
         printf("No se pudo abrir el archivo %s\n", path);
         return NULL;
     }
-    EVP_PKEY *evp_key = PEM_read_PUBKEY(fp, NULL, NULL, NULL);
-    fclose(fp);
-    if (!evp_key) {
-        printf("No se pudo leer la clave publica en %s (PEM_read_PUBKEY fallo)\n", path);
-        ERR_print_errors_fp(stderr);
+
+    // Leer todo el archivo en memoria
+    fseek(fp, 0, SEEK_END);
+    long len = ftell(fp);
+    rewind(fp);
+    char *data = malloc(len + 1);
+    if (!data) {
+        fclose(fp);
+        printf("No se pudo reservar memoria\n");
         return NULL;
     }
-    RSA *rsa = EVP_PKEY_get1_RSA(evp_key);
-    EVP_PKEY_free(evp_key);
+    fread(data, 1, len, fp);
+    data[len] = '\0';
+    fclose(fp);
+
+    // Usar un BIO de memoria
+    BIO *bio = BIO_new_mem_buf(data, -1);
+    EVP_PKEY *evp_key = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
+    RSA *rsa = NULL;
+    if (evp_key) {
+        rsa = EVP_PKEY_get1_RSA(evp_key);
+        EVP_PKEY_free(evp_key);
+    }
+    BIO_free(bio);
+    free(data);
+
     if (!rsa) {
-        printf("No se pudo extraer RSA de la clave publica\n");
+        printf("No se pudo leer la clave publica (BIO)\n");
         ERR_print_errors_fp(stderr);
         return NULL;
     }
