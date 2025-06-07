@@ -2,100 +2,197 @@
 #include <stdlib.h>
 #include <string.h>
 #include <winsock2.h>
-#include <openssl/rsa.h>
 #include <openssl/pem.h>
+#include <openssl/rsa.h>
 #include <openssl/evp.h>
-#include "../includes/common.h"
+#include <openssl/err.h>
 
-// Funcion para cifrar los datos del usuario con AES-256-CBC
-int encrypt_userdata(const UserData *ud, unsigned char *key, unsigned char *iv, unsigned char *cipher, int *cipherlen);
+#define MAXLEN 4096
 
-#define SERVER_IP "127.0.0.1"
-#define PORT 4444
+#pragma comment(lib, "ws2_32.lib")  // Solo para MSVC, con gcc es -lws2_32
 
 int main() {
+    // Inicializa WinSock
     WSADATA wsa;
-    SOCKET sock;
-    struct sockaddr_in server;
-    char dni[MAX_DNI];
-    unsigned char sym_key[SYM_KEY_LEN], iv[IV_LEN];
-
-    // Inicializa sockets en Windows
-    WSAStartup(MAKEWORD(2,2), &wsa);
-    sock = socket(AF_INET, SOCK_STREAM, 0);
-
-    // Configura datos del servidor
-    server.sin_family = AF_INET;
-    server.sin_addr.s_addr = inet_addr(SERVER_IP);
-    server.sin_port = htons(PORT);
-
-    connect(sock, (struct sockaddr*)&server, sizeof(server));
-
-    // Paso 1: Solicita y envia DNI
-    printf("Enter your DNI: ");
-    fgets(dni, sizeof(dni), stdin);
-    dni[strcspn(dni, "\n")] = 0; // Quita salto de linea
-    send(sock, dni, strlen(dni), 0);
-
-    // Paso 2: Recibe la clave simetrica y IV cifrados, los descifra con su clave privada
-    int enc_key_len, enc_iv_len;
-    recv(sock, (char*)&enc_key_len, sizeof(int), 0);
-    unsigned char enc_key[256];
-    recv(sock, (char*)enc_key, enc_key_len, 0);
-
-    recv(sock, (char*)&enc_iv_len, sizeof(int), 0);
-    unsigned char enc_iv[256];
-    recv(sock, (char*)enc_iv, enc_iv_len, 0);
-
-    // Carga clave privada desde archivo
-    FILE *fp = fopen("keys/cliente_private.pem", "r");
-    RSA *rsa_priv = PEM_read_RSAPrivateKey(fp, NULL, NULL, NULL);
-    fclose(fp);
-    RSA_private_decrypt(enc_key_len, enc_key, sym_key, rsa_priv, RSA_PKCS1_OAEP_PADDING);
-    RSA_private_decrypt(enc_iv_len, enc_iv, iv, rsa_priv, RSA_PKCS1_OAEP_PADDING);
-    RSA_free(rsa_priv);
-
-    // Paso 3: Solicita los datos personales al usuario
-    UserData u;
-    strcpy(u.dni, dni);
-    printf("Name: "); fgets(u.name, MAX_NAME, stdin); u.name[strcspn(u.name, "\n")] = 0;
-    printf("Surname: "); fgets(u.surname, MAX_NAME, stdin); u.surname[strcspn(u.surname, "\n")] = 0;
-    printf("Address: "); fgets(u.address, MAX_ADDR, stdin); u.address[strcspn(u.address, "\n")] = 0;
-    printf("Postal code: "); fgets(u.postal_code, MAX_CP, stdin); u.postal_code[strcspn(u.postal_code, "\n")] = 0;
-
-    // Paso 4: Cifra los datos personales usando AES-256-CBC
-    unsigned char cipher[sizeof(UserData)+16];
-    int cipherlen;
-    encrypt_userdata(&u, sym_key, iv, cipher, &cipherlen);
-
-    // Paso 5: Envia el tamano y los datos cifrados al servidor
-    send(sock, (char*)&cipherlen, sizeof(int), 0);
-    send(sock, (char*)cipher, cipherlen, 0);
-
-    // Paso 6: Recibe confirmacion del servidor
-    char buffer[256];
-    int recvd = recv(sock, buffer, sizeof(buffer), 0);
-    if (recvd > 0) {
-        buffer[recvd] = 0;
-        printf("Server: %s\n", buffer);
+    if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
+        printf("Error en WSAStartup\n");
+        return 1;
     }
 
-    closesocket(sock);
+    // Crea socket
+    SOCKET server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd == INVALID_SOCKET) {
+        printf("No se pudo crear el socket\n");
+        WSACleanup();
+        return 1;
+    }
+
+    struct sockaddr_in server_addr;
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");  // Cambia si tu servidor no es local
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(4444);
+
+    // Conecta al servidor
+    if (connect(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        printf("No se pudo conectar al servidor\n");
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+    printf("Conectado al servidor\n");
+
+    ERR_load_crypto_strings();
+
+    char dni[32];
+    printf("Enter your DNI: ");
+    scanf("%s", dni);
+
+    // 1. Enviar DNI al servidor
+    if (send(server_fd, dni, strlen(dni), 0) <= 0) {
+        printf("Error enviando DNI\n");
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+    printf("DNI enviado, esperando clave simetrica cifrada\n");
+
+    // 2. Recibir longitud de clave simétrica cifrada
+    int enc_sym_len = 0;
+    int r = recv(server_fd, (char*)&enc_sym_len, sizeof(int), 0);
+    printf("Resultado de recv(enc_sym_len): %d\n", r);
+    if (r <= 0) {
+        printf("Fallo en recv(enc_sym_len)\n");
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+    printf("Longitud clave simétrica cifrada recibida: %d\n", enc_sym_len);
+
+    // 3. Recibir clave simétrica cifrada
+    unsigned char enc_sym[MAXLEN] = {0};
+    r = recv(server_fd, (char*)enc_sym, enc_sym_len, 0);
+    printf("Resultado de recv(enc_sym): %d\n", r);
+    if (r <= 0) {
+        printf("Fallo en recv(enc_sym)\n");
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+    printf("Clave simétrica cifrada recibida\n");
+
+    // 4. Recibir longitud de IV cifrado
+    int enc_iv_len = 0;
+    r = recv(server_fd, (char*)&enc_iv_len, sizeof(int), 0);
+    printf("Resultado de recv(enc_iv_len): %d\n", r);
+    if (r <= 0) {
+        printf("Fallo en recv(enc_iv_len)\n");
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+    printf("Longitud IV cifrado recibida: %d\n", enc_iv_len);
+
+    // 5. Recibir IV cifrado
+    unsigned char enc_iv[MAXLEN] = {0};
+    r = recv(server_fd, (char*)enc_iv, enc_iv_len, 0);
+    printf("Resultado de recv(enc_iv): %d\n", r);
+    if (r <= 0) {
+        printf("Fallo en recv(enc_iv)\n");
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+    printf("IV cifrado recibido\n");
+
+    // ----- DESCIFRAR CLAVE SIMÉTRICA E IV -----
+    printf("Cargando clave privada del cliente\n");
+    FILE *fp = fopen("keys/cliente_private.pem", "rb");
+    if (!fp) {
+        printf("No se pudo abrir la clave privada\n");
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+
+    // Lee todo el archivo en memoria
+    fseek(fp, 0, SEEK_END);
+    long len = ftell(fp);
+    rewind(fp);
+    char *key_data = malloc(len + 1);
+    if (!key_data) {
+        printf("No se pudo reservar memoria para la clave\n");
+        fclose(fp);
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+    fread(key_data, 1, len, fp);
+    key_data[len] = '\0';
+    fclose(fp);
+
+    // Usa un BIO en memoria
+    BIO *bio = BIO_new_mem_buf(key_data, -1);
+    EVP_PKEY *pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    free(key_data);
+
+    if (!pkey) {
+        printf("No se pudo leer la clave privada (BIO PKCS#8)\n");
+        ERR_print_errors_fp(stderr);
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+
+    RSA *rsa_priv = EVP_PKEY_get1_RSA(pkey);
+    EVP_PKEY_free(pkey);
+    if (!rsa_priv) {
+        printf("No se pudo extraer RSA de la clave privada\n");
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+
+    unsigned char sym_key[MAXLEN] = {0};
+    int sym_key_len = RSA_private_decrypt(enc_sym_len, enc_sym, sym_key, rsa_priv, RSA_PKCS1_OAEP_PADDING);
+    if (sym_key_len <= 0) {
+        printf("Fallo en descifrado de clave simetrica\n");
+        ERR_print_errors_fp(stderr);
+        RSA_free(rsa_priv);
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+    printf("Clave simetrica descifrada correctamente\n");
+
+    unsigned char iv[MAXLEN] = {0};
+    int iv_len = RSA_private_decrypt(enc_iv_len, enc_iv, iv, rsa_priv, RSA_PKCS1_OAEP_PADDING);
+    RSA_free(rsa_priv);
+    if (iv_len <= 0) {
+        printf("Fallo en descifrado de IV\n");
+        ERR_print_errors_fp(stderr);
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+    printf("IV descifrado correctamente\n");
+
+    // ----- PEDIR DATOS AL USUARIO Y CIFRAR -----
+    char datos_usuario[256];
+    printf("Introduce tus datos para registro: ");
+    scanf("%s", datos_usuario);
+
+    // Aquí va tu cifrado con AES usando sym_key y iv
+    // unsigned char datos_cifrados[MAXLEN];
+    // int datos_cifrados_len = cifrar_AES_256_CBC(datos_usuario, ..., sym_key, iv, ...);
+
+    // // Enviar longitud y datos cifrados al servidor (cuando lo tengas)
+    // send(server_fd, (char*)&datos_cifrados_len, sizeof(int), 0);
+    // send(server_fd, (char*)datos_cifrados, datos_cifrados_len, 0);
+
+    printf("Terminado. (Agrega el cifrado y envío de datos según tu implementación)\n");
+
+    closesocket(server_fd);
     WSACleanup();
-    return 0;
-}
-
-// Cifra los datos de usuario usando AES-256-CBC
-int encrypt_userdata(const UserData *ud, unsigned char *key, unsigned char *iv, unsigned char *cipher, int *cipherlen) {
-    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-    int len, total_len=0, final_len;
-
-    EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv);
-    EVP_EncryptUpdate(ctx, cipher, &len, (unsigned char*)ud, sizeof(UserData));
-    total_len = len;
-    EVP_EncryptFinal_ex(ctx, cipher+len, &final_len);
-    total_len += final_len;
-    EVP_CIPHER_CTX_free(ctx);
-    *cipherlen = total_len;
     return 0;
 }
