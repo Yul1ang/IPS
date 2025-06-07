@@ -76,6 +76,16 @@ int main() {
         WSACleanup();
         return 1;
     }
+
+    // Si el usuario es admin, simplemente termina tras enviar el DNI
+    if (strcmp(dni, "admin") == 0) {
+        // Ya se ha enviado el DNI, no espera respuesta (el admin solo imprime por consola en el servidor)
+        printf("Modo admin: solicitud enviada, revisa la consola del servidor para ver la tabla.\n");
+        closesocket(server_fd);
+        WSACleanup();
+        return 0;
+    }
+    
     printf("DNI enviado, esperando clave simetrica cifrada\n");
 
     // 2. Recibir longitud de clave simétrica cifrada
@@ -224,6 +234,14 @@ int main() {
     send(server_fd, (char*)datos_cifrados, datos_cifrados_len, 0);
 
     printf("Datos cifrados y enviados al servidor correctamente.\n");
+
+    // Esperar confirmación del servidor (NUEVO)
+    char buffer[128];
+    int conf = recv(server_fd, buffer, sizeof(buffer)-1, 0);
+    if (conf > 0) {
+        buffer[conf] = 0;
+        printf("Servidor: %s\n", buffer);
+    }
 
     closesocket(server_fd);
     WSACleanup();
