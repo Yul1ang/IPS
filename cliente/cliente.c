@@ -9,7 +9,28 @@
 
 #define MAXLEN 4096
 
-#pragma comment(lib, "ws2_32.lib")  // Solo para MSVC, con gcc es -lws2_32
+#pragma comment(lib, "ws2_32.lib")
+
+// ---- FUNCIÓN DE CIFRADO AES ----
+int cifrar_AES_256_CBC(const unsigned char *plaintext, int plaintext_len,
+                       const unsigned char *key, const unsigned char *iv,
+                       unsigned char *ciphertext) {
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    int len, ciphertext_len;
+    EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv);
+    EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len);
+    ciphertext_len = len;
+    EVP_EncryptFinal_ex(ctx, ciphertext + len, &len);
+    ciphertext_len += len;
+    EVP_CIPHER_CTX_free(ctx);
+    return ciphertext_len;
+}
+
+// ---- FUNCIÓN AUXILIAR PARA QUITAR \n ----
+void quitar_newline(char *str) {
+    size_t l = strlen(str);
+    if(l > 0 && str[l-1] == '\n') str[l-1] = '\0';
+}
 
 int main() {
     // Inicializa WinSock
@@ -28,7 +49,7 @@ int main() {
     }
 
     struct sockaddr_in server_addr;
-    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");  // Cambia si tu servidor no es local
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(4444);
 
@@ -45,7 +66,8 @@ int main() {
 
     char dni[32];
     printf("Enter your DNI: ");
-    scanf("%s", dni);
+    scanf("%31s", dni);
+    getchar(); // Limpiar buffer
 
     // 1. Enviar DNI al servidor
     if (send(server_fd, dni, strlen(dni), 0) <= 0) {
@@ -177,20 +199,31 @@ int main() {
     }
     printf("IV descifrado correctamente\n");
 
-    // ----- PEDIR DATOS AL USUARIO Y CIFRAR -----
-    char datos_usuario[256];
-    printf("Introduce tus datos para registro: ");
-    scanf("%s", datos_usuario);
+    // ----- PREGUNTAR POR CAMPOS -----
+    char nombre[64], apellidos[128], direccion[128], cod_postal[16], dni_campo[32];
+    printf("Nombre: ");         fgets(nombre, sizeof(nombre), stdin); quitar_newline(nombre);
+    printf("Apellidos: ");      fgets(apellidos, sizeof(apellidos), stdin); quitar_newline(apellidos);
+    printf("Dirección: ");      fgets(direccion, sizeof(direccion), stdin); quitar_newline(direccion);
+    printf("Código Postal: ");  fgets(cod_postal, sizeof(cod_postal), stdin); quitar_newline(cod_postal);
+    printf("DNI: ");            fgets(dni_campo, sizeof(dni_campo), stdin); quitar_newline(dni_campo);
 
-    // Aquí va tu cifrado con AES usando sym_key y iv
-    // unsigned char datos_cifrados[MAXLEN];
-    // int datos_cifrados_len = cifrar_AES_256_CBC(datos_usuario, ..., sym_key, iv, ...);
+    // ----- CONCATENAR TODOS LOS CAMPOS -----
+    char datos_usuario[512];
+    snprintf(datos_usuario, sizeof(datos_usuario), "%s;%s;%s;%s;%s",
+        nombre, apellidos, direccion, cod_postal, dni_campo);
 
-    // // Enviar longitud y datos cifrados al servidor (cuando lo tengas)
-    // send(server_fd, (char*)&datos_cifrados_len, sizeof(int), 0);
-    // send(server_fd, (char*)datos_cifrados, datos_cifrados_len, 0);
+    // CIFRAR LOS DATOS DEL USUARIO CON AES-256-CBC
+    unsigned char datos_cifrados[MAXLEN];
+    int datos_cifrados_len = cifrar_AES_256_CBC(
+        (unsigned char*)datos_usuario, strlen(datos_usuario),
+        sym_key, iv, datos_cifrados
+    );
 
-    printf("Terminado. (Agrega el cifrado y envío de datos según tu implementación)\n");
+    // ENVIAR LONGITUD Y DATOS CIFRADOS AL SERVIDOR
+    send(server_fd, (char*)&datos_cifrados_len, sizeof(int), 0);
+    send(server_fd, (char*)datos_cifrados, datos_cifrados_len, 0);
+
+    printf("Datos cifrados y enviados al servidor correctamente.\n");
 
     closesocket(server_fd);
     WSACleanup();
